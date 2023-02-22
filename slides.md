@@ -209,3 +209,145 @@ DLROW
 
 ---
 
+# ZIO Queue
+
+Like Promises, but can hold multiple values.
+
+Never holds errors or death.
+
+---
+
+## Basic Example
+
+```scala
+for {
+  queue <- Queue.unbounded[String]
+  // Fork a fiber to continually read from the Queue
+  _ <- queue.take.flatMap(s => Console.printLine(s"Received $s from queue")).forever.fork
+  // Main fiber will put values in queue
+  _ <- queue.offer("FOO")
+  _ <- queue.offer("BAR")
+} yield ()
+```
+
+```
+Received FOO from queue
+Received BAR from queue
+```
+
+---
+
+## Multiple Readers and Writers
+
+Any number of fibers can be reading and writing from a queue concurrently.
+
+```scala
+for {
+  queue <- Queue.unbounded[String]
+  _ <- queue.take.flatMap(s => Console.printLine(s"Worker 1: $s")).forever.fork
+  _ <- queue.take.flatMap(s => Console.printLine(s"Worker 2: $s")).forever.fork
+  // Main fiber will put values in queue
+  _ <- queue.offerAll(Seq("FOO", "BAR", "ONE", "TWO"))
+} yield ()
+```
+
+```
+Worker 2: BAR
+Worker 1: FOO
+Worker 2: ONE
+Worker 1: TWO
+```
+
+---
+
+## Bounded blocking queues
+
+Queues can be created with limited capacity. With a bounded queue, the `offer` call will block until space is available in the queue.
+
+```scala
+for {
+  queue <- Queue.bounded[Int](2)
+  _ <- ZIO.foreach(1 to 4) { s => for {
+    _ <- queue.offer(s)
+    _ <- Console.printLine(s"Wrote $s to queue")
+  } yield ()}.fork
+  _ <- ZIO.replicateZIO(4) { for {
+    _ <- ZIO.sleep(1.seconds)
+    _ <- Console.printLine("About to read from queue...")
+    _ <- queue.take
+  } yield ()}
+} yield ()
+```
+
+```
+Wrote 1 to queue
+Wrote 2 to queue
+About to read from queue...
+Wrote 3 to queue
+About to read from queue...
+Wrote 4 to queue
+About to read from queue...
+About to read from queue...
+```
+
+---
+
+## Bounded sliding queues
+
+ZIO's sliding queues also have limited capacity, but will not block the `offer` call. Instead, older values will be removed from the queue to make room for new ones.
+
+```scala
+for {
+  queue <- Queue.sliding[Int](2)
+  _ <- queue.offerAll(1 to 4)
+  result <- queue.takeAll
+  _ <- Console.printLine(s"Read $result from queue")
+} yield ()
+```
+
+```
+Read Chunk(3,4) from queue
+```
+
+---
+
+## Bounded dropping queues
+
+ZIO's dropping queues are similiar, but instead the new values will be dropped without ever entering the queue.
+
+```scala
+for {
+  queue <- Queue.dropping[Int](2)
+  _ <- queue.offerAll(1 to 4)
+  result <- queue.takeAll
+  _ <- Console.printLine(s"Read $result from queue")
+} yield ()
+```
+
+```
+Read Chunk(1,2) from queue
+```
+
+---
+
+## Shutdown
+
+Queues can be shutdown, which will interrupt all fibers waiting to take or put values into the queue.
+
+```scala
+for {
+  queue <- Queue.unbounded[Int]
+  fiber <- queue.take.flatMap(s => Console.printLine(s"Received $s from queue")).forever.fork
+  _ <- queue.offer(1)
+  _ <- ZIO.sleep(1.seconds)
+  _ <- queue.offer(2)
+  _ <- ZIO.sleep(1.seconds)
+  _ <- queue.shutdown
+  _ <- fiber.await
+} yield assertCompletes
+```
+
+```
+Received 1 from queue
+Received 2 from queue
+```
